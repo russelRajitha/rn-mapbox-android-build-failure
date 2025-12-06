@@ -1,21 +1,26 @@
-import React, {useCallback} from 'react';
-import Animated, {useAnimatedStyle, useSharedValue, withDecay} from 'react-native-reanimated';
+import React, {useCallback, useState} from 'react';
+import Animated, {
+    runOnJS,
+    useAnimatedStyle,
+    useSharedValue,
+    withDecay,
+} from 'react-native-reanimated';
 import {
     Gesture,
     GestureDetector,
     GestureHandlerRootView,
     GestureUpdateEvent,
     PanGestureHandlerEventPayload,
-    PinchGestureHandlerEventPayload
+    PinchGestureHandlerEventPayload,
 } from 'react-native-gesture-handler';
 import {StyleSheet, View} from 'react-native';
-import {SafeAreaProvider, SafeAreaView} from "react-native-safe-area-context";
-import {LayoutChangeEvent} from "react-native/Libraries/Types/CoreEventTypes";
-import {ImageLoadEvent} from "react-native/Libraries/Image/Image";
+import {SafeAreaProvider, SafeAreaView} from 'react-native-safe-area-context';
+import {LayoutChangeEvent} from 'react-native/Libraries/Types/CoreEventTypes';
+import {ImageLoadEvent} from 'react-native/Libraries/Image/Image';
 
 function clamp(val: number, min: number, max: number) {
-    'worklet'
-    return Math.min(Math.max(val, min), max)
+    'worklet';
+    return Math.min(Math.max(val, min), max);
 }
 
 function getMaxTranslate(
@@ -46,15 +51,25 @@ function getMaxTranslate(
     const maxX = Math.max(0, (scaledWidth - containerWidth) / 2)
     const maxY = Math.max(0, (scaledHeight - containerHeight) / 2)
 
-    return {maxX, maxY}
+    return {maxX, maxY};
 }
 
 const MIN_VELOCITY = 50
-const image = require('./assets/img.png')
+const SWIPE_DISTANCE = 60 // how far finger must travel to trigger page swipe
+const SWIPE_VELOCITY = 400 // or how fast
+
+// Just example images – replace with your own list
+const images = [
+    require('./assets/img.png'),
+    require('./assets/img1.png'),
+]
+
 const MaxScale = 2.5
 const MinScale = 1
 
 export default function App() {
+    const [currentIndex, setCurrentIndex] = useState(0)
+
     const containerWidth = useSharedValue(0)
     const containerHeight = useSharedValue(0)
     const imageWidth = useSharedValue(0)
@@ -76,28 +91,45 @@ export default function App() {
         ],
     }))
 
-    const pinchOnUpdate = useCallback((e: GestureUpdateEvent<PinchGestureHandlerEventPayload>) => {
-        'worklet'
-        const nextScale = clamp(savedScale.value * e.scale, MinScale, MaxScale)
-        scale.value = nextScale
+    // JS function to change page (called from worklet via runOnJS)
+    const handleSwipePage = useCallback(
+        (direction: 'next' | 'prev') => {
+            setCurrentIndex(prev => {
+                if (direction === 'next') {
+                    return Math.min(prev + 1, images.length - 1)
+                } else {
+                    return Math.max(prev - 1, 0)
+                }
+            })
+        },
+        []
+    )
 
-        const {maxX, maxY} = getMaxTranslate(
-            nextScale,
-            containerWidth.value,
-            containerHeight.value,
-            imageWidth.value,
-            imageHeight.value,
-        )
+    const pinchOnUpdate = useCallback(
+        (e: GestureUpdateEvent<PinchGestureHandlerEventPayload>) => {
+            'worklet'
+            const nextScale = clamp(savedScale.value * e.scale, MinScale, MaxScale)
+            scale.value = nextScale
 
-        translationX.value = clamp(translationX.value, -maxX, maxX)
-        translationY.value = clamp(translationY.value, -maxY, maxY)
-    }, [])
+            const {maxX, maxY} = getMaxTranslate(
+                nextScale,
+                containerWidth.value,
+                containerHeight.value,
+                imageWidth.value,
+                imageHeight.value
+            )
+
+            translationX.value = clamp(translationX.value, -maxX, maxX)
+            translationY.value = clamp(translationY.value, -maxY, maxY)
+        },
+        []
+    )
+
     const pinchOnEnd = useCallback(() => {
         savedScale.value = scale.value
     }, [])
-    const pinch = Gesture.Pinch()
-        .onUpdate(pinchOnUpdate)
-        .onEnd(pinchOnEnd)
+
+    const pinch = Gesture.Pinch().onUpdate(pinchOnUpdate).onEnd(pinchOnEnd)
 
     const doubleTapOnStart = useCallback(() => {
         'worklet'
@@ -116,7 +148,7 @@ export default function App() {
                 containerWidth.value,
                 containerHeight.value,
                 imageWidth.value,
-                imageHeight.value,
+                imageHeight.value
             )
 
             translationX.value = clamp(translationX.value, -maxX, maxX)
@@ -133,69 +165,93 @@ export default function App() {
         prevTranslationX.value = translationX.value
         prevTranslationY.value = translationY.value
     }, [])
-    const panOnUpdate = useCallback((event: GestureUpdateEvent<PanGestureHandlerEventPayload>) => {
-        'worklet'
 
-        // Optional: don’t allow panning when not zoomed in
-        if (scale.value <= MinScale) {
-            translationX.value = 0
-            translationY.value = 0
-            return
-        }
+    const panOnUpdate = useCallback(
+        (event: GestureUpdateEvent<PanGestureHandlerEventPayload>) => {
+            'worklet'
 
-        const {maxX, maxY} = getMaxTranslate(
-            scale.value,
-            containerWidth.value,
-            containerHeight.value,
-            imageWidth.value,
-            imageHeight.value,
-        )
+            // If not zoomed, we don't pan the image (pager handles swipe on end)
+            if (scale.value <= MinScale) {
+                translationX.value = 0
+                translationY.value = 0
+                return
+            }
 
-        const nextX = prevTranslationX.value + event.translationX
-        const nextY = prevTranslationY.value + event.translationY
+            const {maxX, maxY} = getMaxTranslate(
+                scale.value,
+                containerWidth.value,
+                containerHeight.value,
+                imageWidth.value,
+                imageHeight.value
+            )
 
-        translationX.value = clamp(nextX, -maxX, maxX)
-        translationY.value = clamp(nextY, -maxY, maxY)
-    }, [])
-    const panOnEnd = useCallback((event: GestureUpdateEvent<PanGestureHandlerEventPayload>) => {
-        'worklet'
+            const nextX = prevTranslationX.value + event.translationX
+            const nextY = prevTranslationY.value + event.translationY
 
-        if (scale.value <= MinScale) {
-            translationX.value = 0
-            translationY.value = 0
-            return
-        }
+            translationX.value = clamp(nextX, -maxX, maxX)
+            translationY.value = clamp(nextY, -maxY, maxY)
+        },
+        []
+    )
 
-        const {maxX, maxY} = getMaxTranslate(
-            scale.value,
-            containerWidth.value,
-            containerHeight.value,
-            imageWidth.value,
-            imageHeight.value,
-        )
+    const panOnEnd = useCallback(
+        (event: GestureUpdateEvent<PanGestureHandlerEventPayload>) => {
+            'worklet'
 
+            // When not zoomed -> treat as pager swipe
+            if (scale.value <= MinScale) {
+                const dx = event.translationX
+                const vx = event.velocityX
 
-        const vx = event.velocityX
-        const vy = event.velocityY
+                const shouldSwipeNext =
+                    (dx < -SWIPE_DISTANCE || vx < -SWIPE_VELOCITY)
+                const shouldSwipePrev =
+                    (dx > SWIPE_DISTANCE || vx > SWIPE_VELOCITY)
 
-        if (Math.abs(vx) > MIN_VELOCITY) {
-            translationX.value = withDecay({
-                velocity: vx,
-                clamp: [-maxX, maxX],
-            })
-        } else {
-            translationX.value = clamp(translationX.value, -maxX, maxX)
-        }
+                if (shouldSwipeNext) {
+                    runOnJS(handleSwipePage)('next')
+                } else if (shouldSwipePrev) {
+                    runOnJS(handleSwipePage)('prev')
+                }
 
-        if (Math.abs(vy) > MIN_VELOCITY) {
-            translationY.value = withDecay({
-                velocity: vy,
-                clamp: [-maxY, maxY],
-            })
-        } else {
-            translationY.value = clamp(translationY.value, -maxY, maxY)
-        }
-    }, [])
+                // Make sure image stays centered when not zoomed
+                translationX.value = 0
+                translationY.value = 0
+                return
+            }
+
+            // When zoomed -> apply momentum with clamping
+            const {maxX, maxY} = getMaxTranslate(
+                scale.value,
+                containerWidth.value,
+                containerHeight.value,
+                imageWidth.value,
+                imageHeight.value
+            )
+
+            const vx = event.velocityX
+            const vy = event.velocityY
+
+            if (Math.abs(vx) > MIN_VELOCITY) {
+                translationX.value = withDecay({
+                    velocity: vx,
+                    clamp: [-maxX, maxX],
+                })
+            } else {
+                translationX.value = clamp(translationX.value, -maxX, maxX)
+            }
+
+            if (Math.abs(vy) > MIN_VELOCITY) {
+                translationY.value = withDecay({
+                    velocity: vy,
+                    clamp: [-maxY, maxY],
+                })
+            } else {
+                translationY.value = clamp(translationY.value, -maxY, maxY)
+            }
+        },
+        [handleSwipePage]
+    )
 
     const pan = Gesture.Pan()
         .minDistance(MinScale)
@@ -236,7 +292,7 @@ export default function App() {
                             <Animated.Image
                                 onLoad={onLoadImage}
                                 style={[styles.box, sizeStyle, animatedStyles]}
-                                source={image}
+                                source={images[currentIndex]}
                                 resizeMode={'contain'}
                             />
 
