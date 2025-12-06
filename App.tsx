@@ -1,8 +1,9 @@
-import React, {useState} from 'react';
+import React, {useCallback, useState} from 'react';
 import Animated, {useAnimatedStyle, useSharedValue,} from 'react-native-reanimated';
-import {Gesture, GestureDetector, GestureHandlerRootView,} from 'react-native-gesture-handler';
-import {Image, StyleSheet, View} from 'react-native';
+import {Gesture, GestureDetector, GestureHandlerRootView,  GestureUpdateEvent, PinchGestureHandlerEventPayload,PanGestureHandlerEventPayload} from 'react-native-gesture-handler';
+import {StyleSheet, View} from 'react-native';
 import {SafeAreaProvider, SafeAreaView} from "react-native-safe-area-context";
+import {LayoutChangeEvent} from "react-native/Libraries/Types/CoreEventTypes";
 
 function clamp(val: number, min: number, max: number) {
     'worklet'
@@ -14,11 +15,6 @@ const MaxScale = 2.5
 const MinScale = 1
 
 export default function App() {
-    const [containerDimensions, setContainerDimensions] = useState<{ width?: number; height?: number; }>({
-        width: undefined,
-        height: undefined,
-    })
-
     const containerWidth = useSharedValue(0)
     const containerHeight = useSharedValue(0)
 
@@ -37,15 +33,42 @@ export default function App() {
             {scale: scale.value},
         ],
     }))
-
+    const pinchOnUpdate = useCallback((e: GestureUpdateEvent<PinchGestureHandlerEventPayload>) => {
+        const nextScale = clamp(savedScale.value * e.scale, MinScale, MaxScale)
+        scale.value = nextScale
+        const maxTranslateX = (containerWidth.value * (nextScale - MinScale)) / 2
+        const maxTranslateY = (containerHeight.value * (nextScale - MinScale)) / 2
+        translationX.value = clamp(
+            translationX.value,
+            -maxTranslateX,
+            maxTranslateX
+        )
+        translationY.value = clamp(
+            translationY.value,
+            -maxTranslateY,
+            maxTranslateY
+        )
+    },[])
+    const pinchOnEnd = useCallback(() => {
+        savedScale.value = scale.value
+    },[])
     const pinch = Gesture.Pinch()
-        .onUpdate((e) => {
-            const nextScale = clamp(savedScale.value * e.scale, MinScale, MaxScale)
-            scale.value = nextScale
+        .onUpdate(pinchOnUpdate)
+        .onEnd(pinchOnEnd)
 
-            // 2. Clamp translations for *this* scale
-            const maxTranslateX = (containerWidth.value * (nextScale - MinScale)) / 2
-            const maxTranslateY = (containerHeight.value * (nextScale - MinScale)) / 2
+
+    const doubleTapOnStart = useCallback(() => {
+        if (scale.value > MinScale) {
+            scale.value = MinScale
+            savedScale.value = MinScale
+            translationX.value = 0
+            translationY.value = 0
+        } else {
+            scale.value = MaxScale
+            savedScale.value = MaxScale
+
+            const maxTranslateX = (containerWidth.value * (MaxScale - MinScale)) / 2
+            const maxTranslateY = (containerHeight.value * (MaxScale - MinScale)) / 2
 
             translationX.value = clamp(
                 translationX.value,
@@ -57,82 +80,57 @@ export default function App() {
                 -maxTranslateY,
                 maxTranslateY
             )
-        })
-        .onEnd(() => {
-            savedScale.value = scale.value
-        }).runOnJS(true)
-
+        }
+    },[])
     const doubleTap = Gesture.Tap()
         .maxDuration(250)
         .numberOfTaps(2)
-        .onStart(() => {
-            if (scale.value > MinScale) {
-                scale.value = MinScale
-                savedScale.value = MinScale
-                translationX.value = 0
-                translationY.value = 0
-            } else {
-                scale.value = MaxScale
-                savedScale.value = MaxScale
+        .onStart(doubleTapOnStart)
 
-                const maxTranslateX = (containerWidth.value * (MaxScale - MinScale)) / 2
-                const maxTranslateY = (containerHeight.value * (MaxScale - MinScale)) / 2
+    const panOnStart = useCallback(() => {
+        prevTranslationX.value = translationX.value
+        prevTranslationY.value = translationY.value
+    },[])
+    const panOnUpdate = useCallback((event:GestureUpdateEvent<PanGestureHandlerEventPayload>) => {
+        const maxTranslateX = (containerWidth.value * (scale.value - MinScale)) / 2
+        const maxTranslateY = (containerHeight.value * (scale.value - MinScale)) / 2
 
-                translationX.value = clamp(
-                    translationX.value,
-                    -maxTranslateX,
-                    maxTranslateX
-                )
-                translationY.value = clamp(
-                    translationY.value,
-                    -maxTranslateY,
-                    maxTranslateY
-                )
-            }
-        })
+        const nextX = prevTranslationX.value + event.translationX
+        const nextY = prevTranslationY.value + event.translationY
+
+        translationX.value = clamp(nextX, -maxTranslateX, maxTranslateX)
+        translationY.value = clamp(nextY, -maxTranslateY, maxTranslateY)
+    },[])
 
     const pan = Gesture.Pan()
         .minDistance(MinScale)
-        .onStart(() => {
-            prevTranslationX.value = translationX.value
-            prevTranslationY.value = translationY.value
-        })
-        .onUpdate((event) => {
-            const maxTranslateX = (containerWidth.value * (scale.value - MinScale)) / 2
-            const maxTranslateY = (containerHeight.value * (scale.value - MinScale)) / 2
-
-            const nextX = prevTranslationX.value + event.translationX
-            const nextY = prevTranslationY.value + event.translationY
-
-            translationX.value = clamp(nextX, -maxTranslateX, maxTranslateX)
-            translationY.value = clamp(nextY, -maxTranslateY, maxTranslateY)
-        })
+        .onStart(panOnStart)
+        .onUpdate(panOnUpdate)
 
     const composed = Gesture.Race(pan, pinch, doubleTap)
+    const sizeStyle = useAnimatedStyle(() => ({
+        width: containerWidth.value,
+        height: containerHeight.value,
+    }))
 
+    const onLayoutContainer = useCallback((event:LayoutChangeEvent) => {
+        containerWidth.value = event.nativeEvent.layout.width
+        containerHeight.value = event.nativeEvent.layout.height
+    },[])
     return (
         <SafeAreaProvider>
             <SafeAreaView style={{flex: 1}}>
                 <View
                     style={{flex: 1, backgroundColor: 'red', overflow: 'hidden'}}
-                    onLayout={(event) => {
-                        const {width, height} = event.nativeEvent.layout
-                        setContainerDimensions({width, height})
-                        containerWidth.value = width
-                        containerHeight.value = height
-                    }}
+                    onLayout={onLayoutContainer}
                 >
                     <GestureHandlerRootView style={styles.container}>
                         <GestureDetector gesture={composed}>
-                            <Animated.View
-                                style={[styles.box, containerDimensions, animatedStyles]}
-                            >
-                                <Image
-                                    style={containerDimensions}
-                                    source={image}
-                                    resizeMode={'contain'}
-                                />
-                            </Animated.View>
+                            <Animated.Image
+                                style={[styles.box, sizeStyle, animatedStyles]}
+                                source={image}
+                                resizeMode={'contain'}
+                            />
                         </GestureDetector>
                     </GestureHandlerRootView>
                 </View>
