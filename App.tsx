@@ -5,7 +5,8 @@ import {Image, StyleSheet, View} from 'react-native';
 import {SafeAreaProvider, SafeAreaView} from "react-native-safe-area-context";
 
 function clamp(val: number, min: number, max: number) {
-    return Math.min(Math.max(val, min), max);
+    'worklet'
+    return Math.min(Math.max(val, min), max)
 }
 
 const image = require('./assets/img.png')
@@ -17,84 +18,127 @@ export default function App() {
         width: undefined,
         height: undefined,
     })
-    const translationX = useSharedValue(0);
-    const translationY = useSharedValue(0);
-    const prevTranslationX = useSharedValue(0);
-    const prevTranslationY = useSharedValue(0);
 
-    const scale = useSharedValue(MinScale);
-    const savedScale = useSharedValue(MinScale);
+    const containerWidth = useSharedValue(0)
+    const containerHeight = useSharedValue(0)
+
+    const translationX = useSharedValue(0)
+    const translationY = useSharedValue(0)
+    const prevTranslationX = useSharedValue(0)
+    const prevTranslationY = useSharedValue(0)
+
+    const scale = useSharedValue(MinScale)
+    const savedScale = useSharedValue(MinScale)
 
     const animatedStyles = useAnimatedStyle(() => ({
         transform: [
             {translateX: translationX.value},
             {translateY: translationY.value},
-            {scale: scale.value}
+            {scale: scale.value},
         ],
-    }));
+    }))
 
     const pinch = Gesture.Pinch()
         .onUpdate((e) => {
-            scale.value = clamp(savedScale.value * e.scale, MinScale, MaxScale,);
+            const nextScale = clamp(savedScale.value * e.scale, MinScale, MaxScale)
+            scale.value = nextScale
+
+            // 2. Clamp translations for *this* scale
+            const maxTranslateX = (containerWidth.value * (nextScale - MinScale)) / 2
+            const maxTranslateY = (containerHeight.value * (nextScale - MinScale)) / 2
+
+            translationX.value = clamp(
+                translationX.value,
+                -maxTranslateX,
+                maxTranslateX
+            )
+            translationY.value = clamp(
+                translationY.value,
+                -maxTranslateY,
+                maxTranslateY
+            )
         })
         .onEnd(() => {
-            savedScale.value = scale.value;
-        }).runOnJS(true);
+            savedScale.value = scale.value
+        }).runOnJS(true)
 
     const doubleTap = Gesture.Tap()
         .maxDuration(250)
         .numberOfTaps(2)
         .onStart(() => {
             if (scale.value > MinScale) {
-                scale.value = MinScale;
-                savedScale.value = MinScale;
+                scale.value = MinScale
+                savedScale.value = MinScale
+                translationX.value = 0
+                translationY.value = 0
             } else {
-                scale.value = MaxScale;
-                savedScale.value = MaxScale;
+                scale.value = MaxScale
+                savedScale.value = MaxScale
+
+                const maxTranslateX = (containerWidth.value * (MaxScale - MinScale)) / 2
+                const maxTranslateY = (containerHeight.value * (MaxScale - MinScale)) / 2
+
+                translationX.value = clamp(
+                    translationX.value,
+                    -maxTranslateX,
+                    maxTranslateX
+                )
+                translationY.value = clamp(
+                    translationY.value,
+                    -maxTranslateY,
+                    maxTranslateY
+                )
             }
-        });
+        })
 
     const pan = Gesture.Pan()
         .minDistance(MinScale)
         .onStart(() => {
-            prevTranslationX.value = translationX.value;
-            prevTranslationY.value = translationY.value;
+            prevTranslationX.value = translationX.value
+            prevTranslationY.value = translationY.value
         })
         .onUpdate((event) => {
-            const width = containerDimensions.width || 0;
-            const height = containerDimensions.height || 0;
+            const maxTranslateX = (containerWidth.value * (scale.value - MinScale)) / 2
+            const maxTranslateY = (containerHeight.value * (scale.value - MinScale)) / 2
 
-            const maxTranslateX = (width * (scale.value - MinScale)) / 2;
-            const maxTranslateY = (height * (scale.value - MinScale)) / 2;
+            const nextX = prevTranslationX.value + event.translationX
+            const nextY = prevTranslationY.value + event.translationY
 
-            const nextX = prevTranslationX.value + event.translationX;
-            const nextY = prevTranslationY.value + event.translationY;
-
-            translationX.value = clamp(nextX, -maxTranslateX, maxTranslateX);
-            translationY.value = clamp(nextY, -maxTranslateY, maxTranslateY);
+            translationX.value = clamp(nextX, -maxTranslateX, maxTranslateX)
+            translationY.value = clamp(nextY, -maxTranslateY, maxTranslateY)
         })
-        .runOnJS(true);
-    const composed = Gesture.Race(pan, pinch, doubleTap);
+
+    const composed = Gesture.Race(pan, pinch, doubleTap)
+
     return (
         <SafeAreaProvider>
             <SafeAreaView style={{flex: 1}}>
                 <View
                     style={{flex: 1, backgroundColor: 'red', overflow: 'hidden'}}
-                    onLayout={(event) => setContainerDimensions({
-                        width: event.nativeEvent.layout.width,
-                        height: event.nativeEvent.layout.height,
-                    })}>
+                    onLayout={(event) => {
+                        const {width, height} = event.nativeEvent.layout
+                        setContainerDimensions({width, height})
+                        containerWidth.value = width
+                        containerHeight.value = height
+                    }}
+                >
                     <GestureHandlerRootView style={styles.container}>
                         <GestureDetector gesture={composed}>
-                            <Animated.View style={[styles.box, containerDimensions, animatedStyles]}>
-                                <Image style={containerDimensions} source={image} resizeMode={'contain'}/>
+                            <Animated.View
+                                style={[styles.box, containerDimensions, animatedStyles]}
+                            >
+                                <Image
+                                    style={containerDimensions}
+                                    source={image}
+                                    resizeMode={'contain'}
+                                />
                             </Animated.View>
                         </GestureDetector>
                     </GestureHandlerRootView>
                 </View>
             </SafeAreaView>
         </SafeAreaProvider>
-    );
+    )
 }
 
 const styles = StyleSheet.create({
@@ -105,4 +149,4 @@ const styles = StyleSheet.create({
         backgroundColor: '#b58df1',
         borderRadius: 20,
     },
-});
+})
