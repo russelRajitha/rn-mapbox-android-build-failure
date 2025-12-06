@@ -1,5 +1,5 @@
 import React, {useCallback} from 'react';
-import Animated, {useAnimatedStyle, useSharedValue,} from 'react-native-reanimated';
+import Animated, {useAnimatedStyle, useSharedValue, withDecay} from 'react-native-reanimated';
 import {
     Gesture,
     GestureDetector,
@@ -32,7 +32,7 @@ function getMaxTranslate(
         imageWidth === 0 ||
         imageHeight === 0
     ) {
-        return { maxX: 0, maxY: 0 }
+        return {maxX: 0, maxY: 0}
     }
 
     // Base size of the image as you render it: width = containerWidth, height keeps aspect ratio
@@ -46,10 +46,10 @@ function getMaxTranslate(
     const maxX = Math.max(0, (scaledWidth - containerWidth) / 2)
     const maxY = Math.max(0, (scaledHeight - containerHeight) / 2)
 
-    return { maxX, maxY }
+    return {maxX, maxY}
 }
 
-
+const MIN_VELOCITY = 50
 const image = require('./assets/img.png')
 const MaxScale = 2.5
 const MinScale = 1
@@ -76,32 +76,29 @@ export default function App() {
         ],
     }))
 
-    const pinchOnUpdate = useCallback(
-        (e: GestureUpdateEvent<PinchGestureHandlerEventPayload>) => {
-            'worklet'
-            const nextScale = clamp(savedScale.value * e.scale, MinScale, MaxScale)
-            scale.value = nextScale
+    const pinchOnUpdate = useCallback((e: GestureUpdateEvent<PinchGestureHandlerEventPayload>) => {
+        'worklet'
+        const nextScale = clamp(savedScale.value * e.scale, MinScale, MaxScale)
+        scale.value = nextScale
 
-            const { maxX, maxY } = getMaxTranslate(
-                nextScale,
-                containerWidth.value,
-                containerHeight.value,
-                imageWidth.value,
-                imageHeight.value,
-            )
+        const {maxX, maxY} = getMaxTranslate(
+            nextScale,
+            containerWidth.value,
+            containerHeight.value,
+            imageWidth.value,
+            imageHeight.value,
+        )
 
-            translationX.value = clamp(translationX.value, -maxX, maxX)
-            translationY.value = clamp(translationY.value, -maxY, maxY)
-        },
-        []
-    )
-
+        translationX.value = clamp(translationX.value, -maxX, maxX)
+        translationY.value = clamp(translationY.value, -maxY, maxY)
+    }, [])
     const pinchOnEnd = useCallback(() => {
         savedScale.value = scale.value
     }, [])
     const pinch = Gesture.Pinch()
         .onUpdate(pinchOnUpdate)
         .onEnd(pinchOnEnd)
+
     const doubleTapOnStart = useCallback(() => {
         'worklet'
         if (scale.value > MinScale) {
@@ -114,7 +111,7 @@ export default function App() {
             scale.value = MaxScale
             savedScale.value = MaxScale
 
-            const { maxX, maxY } = getMaxTranslate(
+            const {maxX, maxY} = getMaxTranslate(
                 MaxScale,
                 containerWidth.value,
                 containerHeight.value,
@@ -136,43 +133,80 @@ export default function App() {
         prevTranslationX.value = translationX.value
         prevTranslationY.value = translationY.value
     }, [])
-    const panOnUpdate = useCallback(
-        (event: GestureUpdateEvent<PanGestureHandlerEventPayload>) => {
-            'worklet'
+    const panOnUpdate = useCallback((event: GestureUpdateEvent<PanGestureHandlerEventPayload>) => {
+        'worklet'
 
-            // Optional: don’t allow panning when not zoomed in
-            if (scale.value <= MinScale) {
-                translationX.value = 0
-                translationY.value = 0
-                return
-            }
+        // Optional: don’t allow panning when not zoomed in
+        if (scale.value <= MinScale) {
+            translationX.value = 0
+            translationY.value = 0
+            return
+        }
 
-            const { maxX, maxY } = getMaxTranslate(
-                scale.value,
-                containerWidth.value,
-                containerHeight.value,
-                imageWidth.value,
-                imageHeight.value,
-            )
+        const {maxX, maxY} = getMaxTranslate(
+            scale.value,
+            containerWidth.value,
+            containerHeight.value,
+            imageWidth.value,
+            imageHeight.value,
+        )
 
-            const nextX = prevTranslationX.value + event.translationX
-            const nextY = prevTranslationY.value + event.translationY
+        const nextX = prevTranslationX.value + event.translationX
+        const nextY = prevTranslationY.value + event.translationY
 
-            translationX.value = clamp(nextX, -maxX, maxX)
-            translationY.value = clamp(nextY, -maxY, maxY)
-        },
-        []
-    )
+        translationX.value = clamp(nextX, -maxX, maxX)
+        translationY.value = clamp(nextY, -maxY, maxY)
+    }, [])
+    const panOnEnd = useCallback((event: GestureUpdateEvent<PanGestureHandlerEventPayload>) => {
+        'worklet'
+
+        if (scale.value <= MinScale) {
+            translationX.value = 0
+            translationY.value = 0
+            return
+        }
+
+        const {maxX, maxY} = getMaxTranslate(
+            scale.value,
+            containerWidth.value,
+            containerHeight.value,
+            imageWidth.value,
+            imageHeight.value,
+        )
+
+
+        const vx = event.velocityX
+        const vy = event.velocityY
+
+        if (Math.abs(vx) > MIN_VELOCITY) {
+            translationX.value = withDecay({
+                velocity: vx,
+                clamp: [-maxX, maxX],
+            })
+        } else {
+            translationX.value = clamp(translationX.value, -maxX, maxX)
+        }
+
+        if (Math.abs(vy) > MIN_VELOCITY) {
+            translationY.value = withDecay({
+                velocity: vy,
+                clamp: [-maxY, maxY],
+            })
+        } else {
+            translationY.value = clamp(translationY.value, -maxY, maxY)
+        }
+    }, [])
 
     const pan = Gesture.Pan()
         .minDistance(MinScale)
         .onStart(panOnStart)
         .onUpdate(panOnUpdate)
+        .onEnd(panOnEnd)
 
     const composed = Gesture.Race(Gesture.Simultaneous(pan, pinch), doubleTap)
     const sizeStyle = useAnimatedStyle(() => ({
         width: containerWidth.value,
-        height: (imageHeight.value/imageWidth.value) * containerWidth.value,
+        height: (imageHeight.value / imageWidth.value) * containerWidth.value,
     }))
 
     const onLayoutContainer = useCallback((event: LayoutChangeEvent) => {
@@ -190,7 +224,13 @@ export default function App() {
                 <SafeAreaView style={{flex: 1}}>
                     <GestureDetector gesture={composed}>
                         <View
-                            style={{flex: 1, backgroundColor: 'red', overflow: 'hidden',justifyContent:'center',alignItems:'center',}}
+                            style={{
+                                flex: 1,
+                                backgroundColor: 'red',
+                                overflow: 'hidden',
+                                justifyContent: 'center',
+                                alignItems: 'center',
+                            }}
                             onLayout={onLayoutContainer}
                         >
                             <Animated.Image
